@@ -104,7 +104,8 @@ public class FileLoggerModule extends FileLoggerSpec {
      * When the SLF4J factory is not a LoggerContext we create a standalone one
      * so file logging works regardless of the SLF4J version on the classpath.
      */
-    private static LoggerContext getOrCreateLoggerContext() {
+    // Package-private for testability.
+    static LoggerContext getOrCreateLoggerContext() {
         ILoggerFactory factory = LoggerFactory.getILoggerFactory();
         if (factory instanceof LoggerContext) {
             return (LoggerContext) factory;

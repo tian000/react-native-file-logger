@@ -88,8 +88,17 @@ repositories {
         // All of React Native (JS, Obj-C sources, Android binaries) is installed from npm
         url("$rootDir/../node_modules/react-native/android")
     }
+    maven { url 'https://www.jitpack.io' }
     google()
     mavenCentral()
+}
+
+// Standalone configurations that hold only the pinned SLF4J JAR.
+// They do NOT extend testImplementation — the full test classpath comes from
+// the base testDebugUnitTest task. This avoids Android variant attribute issues.
+configurations {
+    testSlf4j1x
+    testSlf4j2x
 }
 
 dependencies {
@@ -100,6 +109,34 @@ dependencies {
     // the host app needs without forcing a downgrade.
     implementation 'org.slf4j:slf4j-api:[1.7.25, 3.0.0)'
     implementation 'com.github.tony19:logback-android:2.0.0'
+
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'com.github.tony19:logback-android:2.0.0'
+
+    testSlf4j1x 'org.slf4j:slf4j-api:1.7.36'
+    testSlf4j2x 'org.slf4j:slf4j-api:2.0.17'
+}
+
+// Register test tasks that run the same tests with different SLF4J versions.
+afterEvaluate {
+    def baseTaskProvider = tasks.named('testDebugUnitTest')
+
+    ['1x': configurations.testSlf4j1x, '2x': configurations.testSlf4j2x].each { label, config ->
+        tasks.register("testSlf4j${label}DebugUnitTest", Test) {
+            def baseTask = baseTaskProvider.get()
+            group = 'verification'
+            description = "Runs unit tests with SLF4J ${label} on the classpath"
+            testClassesDirs = baseTask.testClassesDirs
+            classpath = baseTask.classpath.filter { !it.name.startsWith('slf4j-api-') } + config
+            dependsOn 'compileDebugUnitTestJavaWithJavac'
+        }
+    }
+
+    tasks.register('testBothSlf4jVersions') {
+        group = 'verification'
+        description = 'Runs unit tests against both SLF4J 1.7.x and 2.x'
+        dependsOn 'testSlf4j1xDebugUnitTest', 'testSlf4j2xDebugUnitTest'
+    }
 }
 
 if (isNewArchitectureEnabled()) {
