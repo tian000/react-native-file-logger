@@ -13,6 +13,7 @@ import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.WritableArray;
 
+import org.slf4j.ILoggerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +44,17 @@ public class FileLoggerModule extends FileLoggerSpec {
     private static final int LOG_LEVEL_WARNING = 2;
     private static final int LOG_LEVEL_ERROR = 3;
 
+    /**
+     * The LoggerContext used for file logging. Set during configure().
+     *
+     * When SLF4J 1.x is on the classpath with logback bound, this is the same
+     * context that backs LoggerFactory. Under SLF4J 2.x (where logback-android's
+     * 1.x binding is invisible), this is a standalone context that still writes
+     * to disk via logback's rolling file appender.
+     */
+    private static LoggerContext fileLoggerContext;
+
+    /** Logger obtained from our context — always routes to the file appender. */
     private static Logger logger = LoggerFactory.getLogger(FileLoggerModule.class);
 
     private final ReactApplicationContext reactContext;
@@ -60,36 +72,59 @@ public class FileLoggerModule extends FileLoggerSpec {
 
     @ReactMethod
     public void configure(ReadableMap options, Promise promise) {
-        boolean dailyRolling = options.getBoolean("dailyRolling");
-        int maximumFileSize = options.getInt("maximumFileSize");
-        int maximumNumberOfFiles = options.getInt("maximumNumberOfFiles");
-       
+        try {
+            boolean dailyRolling = options.getBoolean("dailyRolling");
+            int maximumFileSize = options.getInt("maximumFileSize");
+            int maximumNumberOfFiles = options.getInt("maximumNumberOfFiles");
 
-        logsDirectory = options.hasKey("logsDirectory")
-                ? options.getString("logsDirectory")
-                : reactContext.getExternalCacheDir() + "/logs";
-        String logPrefix = options.hasKey("logPrefix")
-                ? options.getString("logPrefix")
-                :reactContext.getPackageName();
-        
+            logsDirectory = options.hasKey("logsDirectory")
+                    ? options.getString("logsDirectory")
+                    : reactContext.getExternalCacheDir() + "/logs";
+            String logPrefix = options.hasKey("logPrefix")
+                    ? options.getString("logPrefix")
+                    : reactContext.getPackageName();
 
-        configureLogger(dailyRolling, maximumFileSize, maximumNumberOfFiles, logsDirectory, logPrefix);
+            configureLogger(dailyRolling, maximumFileSize, maximumNumberOfFiles, logsDirectory, logPrefix);
 
-        configureOptions = options;
-        promise.resolve(null);
+            configureOptions = options;
+            promise.resolve(null);
+        } catch (Exception e) {
+            promise.reject("ERR_FILE_LOGGER_CONFIGURE", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Returns a LoggerContext, handling both SLF4J 1.x and 2.x.
+     *
+     * SLF4J 1.x discovers logback via StaticLoggerBinder — getILoggerFactory()
+     * returns a LoggerContext directly. SLF4J 2.x uses ServiceLoader-based
+     * providers; logback-android 2.0.0 only registers via the 1.x mechanism,
+     * so getILoggerFactory() returns NOPLoggerFactory under SLF4J 2.x.
+     *
+     * When the SLF4J factory is not a LoggerContext we create a standalone one
+     * so file logging works regardless of the SLF4J version on the classpath.
+     */
+    private static LoggerContext getOrCreateLoggerContext() {
+        ILoggerFactory factory = LoggerFactory.getILoggerFactory();
+        if (factory instanceof LoggerContext) {
+            return (LoggerContext) factory;
+        }
+        LoggerContext context = new LoggerContext();
+        context.setName("FileLoggerContext");
+        return context;
     }
 
     public static void configureLogger(boolean dailyRolling, int maximumFileSize, int maximumNumberOfFiles, String logsDirectory, String logPrefix) {
-        LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
+        fileLoggerContext = getOrCreateLoggerContext();
 
         RollingFileAppender<ILoggingEvent> rollingFileAppender = new RollingFileAppender<>();
-        rollingFileAppender.setContext(loggerContext);
+        rollingFileAppender.setContext(fileLoggerContext);
         rollingFileAppender.setName(APPENDER_NAME);
         rollingFileAppender.setFile(logsDirectory + "/" + logPrefix + "-latest.log");
 
         if (dailyRolling) {
             SizeAndTimeBasedRollingPolicy<ILoggingEvent> rollingPolicy = new SizeAndTimeBasedRollingPolicy<>();
-            rollingPolicy.setContext(loggerContext);
+            rollingPolicy.setContext(fileLoggerContext);
             rollingPolicy.setFileNamePattern(logsDirectory + "/" + logPrefix + "-%d{yyyy-MM-dd}.%i.log");
             rollingPolicy.setMaxFileSize(new FileSize(maximumFileSize));
             rollingPolicy.setTotalSizeCap(new FileSize(maximumNumberOfFiles * maximumFileSize));
@@ -100,7 +135,7 @@ public class FileLoggerModule extends FileLoggerSpec {
 
         } else if (maximumFileSize > 0) {
             FixedWindowRollingPolicy rollingPolicy = new FixedWindowRollingPolicy();
-            rollingPolicy.setContext(loggerContext);
+            rollingPolicy.setContext(fileLoggerContext);
             rollingPolicy.setFileNamePattern(logsDirectory + "/" + logPrefix + "-%i.log");
             rollingPolicy.setMinIndex(1);
             rollingPolicy.setMaxIndex(maximumNumberOfFiles);
@@ -109,14 +144,14 @@ public class FileLoggerModule extends FileLoggerSpec {
             rollingFileAppender.setRollingPolicy(rollingPolicy);
 
             SizeBasedTriggeringPolicy triggeringPolicy = new SizeBasedTriggeringPolicy();
-            triggeringPolicy.setContext(loggerContext);
+            triggeringPolicy.setContext(fileLoggerContext);
             triggeringPolicy.setMaxFileSize(new FileSize(maximumFileSize));
             triggeringPolicy.start();
             rollingFileAppender.setTriggeringPolicy(triggeringPolicy);
         }
 
         PatternLayoutEncoder encoder = new PatternLayoutEncoder();
-        encoder.setContext(loggerContext);
+        encoder.setContext(fileLoggerContext);
         encoder.setCharset(Charset.forName("UTF-8"));
         encoder.setPattern("%msg%n");
         encoder.start();
@@ -125,10 +160,13 @@ public class FileLoggerModule extends FileLoggerSpec {
         rollingFileAppender.start();
 
         renewAppender(rollingFileAppender);
+
+        // Re-obtain the logger from our context so write() routes to the file appender.
+        logger = fileLoggerContext.getLogger(FileLoggerModule.class.getName());
     }
 
     private static void renewAppender(Appender appender) {
-        ch.qos.logback.classic.Logger root = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        ch.qos.logback.classic.Logger root = fileLoggerContext.getLogger(Logger.ROOT_LOGGER_NAME);
         root.setLevel(Level.DEBUG);
         // Stopping the previous appender to release any resources it might be holding (file handles) and to ensure a clean shutdown.
         Appender previousFileLoggerAppender = root.getAppender(APPENDER_NAME);
@@ -196,7 +234,7 @@ public class FileLoggerModule extends FileLoggerSpec {
 
             Intent intent = new Intent(Intent.ACTION_SEND_MULTIPLE, Uri.parse("mailto:"));
             intent.setType("plain/text");
-            
+
             if (to != null) {
                 intent.putExtra(Intent.EXTRA_EMAIL, readableArrayToStringArray(to));
             }
@@ -215,7 +253,7 @@ public class FileLoggerModule extends FileLoggerSpec {
                 File zipFile = new File(logsDirectory, "logs.zip");
                 try (FileOutputStream fos = new FileOutputStream(zipFile);
                      ZipOutputStream zos = new ZipOutputStream(fos)) {
-                    
+
                     for (File logFile : logFiles) {
                         ZipEntry zipEntry = new ZipEntry(logFile.getName());
                         zos.putNextEntry(zipEntry);
@@ -242,7 +280,7 @@ public class FileLoggerModule extends FileLoggerSpec {
 
             intent.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            
+
             reactContext.startActivity(intent);
 
             promise.resolve(null);
