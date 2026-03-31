@@ -95,7 +95,10 @@ repositories {
 dependencies {
     //noinspection GradleDynamicVersion
     implementation "com.facebook.react:react-native:+"
-    implementation 'org.slf4j:slf4j-api:1.7.33'
+    // Supports both SLF4J 1.7.x (StaticLoggerBinder binding) and 2.x (standalone
+    // LoggerContext fallback). The range lets Gradle resolve whichever version
+    // the host app needs without forcing a downgrade.
+    implementation 'org.slf4j:slf4j-api:[1.7.25, 3.0.0)'
     implementation 'com.github.tony19:logback-android:2.0.0'
 }
 
