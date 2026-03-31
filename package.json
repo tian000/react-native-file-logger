@@ -16,6 +16,7 @@
 	],
 	"scripts": {
 		"build": "rimraf dist && tsc",
+		"test:android": "cd example/android && ./gradlew :react-native-file-logger:testBothSlf4jVersions",
 		"prepublishOnly": "npm run build"
 	},
 	"repository": {
